@@ -3,6 +3,7 @@ package mfdb
 import (
 	"database/sql"
 	"sync"
+	"time"
 
 	"github.com/myfantasy/mfe"
 
@@ -50,14 +51,21 @@ func (p *Pool) LoadParams(params string) (err error) {
 	return nil
 }
 
-func poolItemCreate(v mfe.Variant) (pi PoolItem, err error) {
+//PoolItemCreate Создание элемента пула
+func PoolItemCreate(v mfe.Variant) (pi PoolItem, err error) {
 	pi = PoolItem{}
 
 	pi.DriverName = v.GE("driver_name").Str()
+
+	log.Debug("PoolItemCreate driver_name. : " + pi.DriverName)
+
 	pi.DataSourceName = v.GE("data_source_name").Str()
+
+	log.Debug("PoolItemCreate data_source_name. : " + pi.DataSourceName)
 
 	db, err := sql.Open(pi.DriverName, pi.DataSourceName)
 	if err != nil {
+		log.Debug("PoolItemCreate open connection. Error: " + err)
 		return pi, nil
 	}
 
@@ -65,12 +73,21 @@ func poolItemCreate(v mfe.Variant) (pi PoolItem, err error) {
 
 	ps := v.GE("pool_size")
 	mps := v.GE("min_pool_size")
+	lt := v.GE("pool_life_time_connection")
+
+	log.Debug("PoolItemCreate pool_size. : " + ps.String())
+	log.Debug("PoolItemCreate min_pool_size. : " + mps.String())
+	log.Debug("PoolItemCreate pool_life_time_connection. : " + lt.String())
 
 	if ps.IsDecimal() {
-		pi.DB.SetMaxOpenConns(ps.Dec())
+		pi.DB.SetMaxOpenConns(int(ps.Dec().IntPart()))
 	}
-
-	pi.DB
+	if mps.IsDecimal() {
+		pi.DB.SetMaxIdleConns(int(mps.Dec().IntPart()))
+	}
+	if lt.IsDecimal() {
+		pi.DB.SetConnMaxLifetime(time.Duration(time.Duration(lt.Dec().IntPart()) * time.Minute))
+	}
 
 	return pi, nil
 }
