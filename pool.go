@@ -11,12 +11,88 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// ConnectionsCollections Pool Collections
+type ConnectionsCollections struct {
+	Pools map[string]*Pool
+}
+
+// ConnectionsCollectionsCreate create ConnectionsCollections
+func ConnectionsCollectionsCreate() (cc ConnectionsCollections) {
+	cc.Pools = make(map[string]*Pool)
+	return cc
+}
+
+// Load load ConnectionsCollections from Variant
+func (cc *ConnectionsCollections) Load(v *mfe.Variant) (err error) {
+
+	if v.IsSV() {
+		log.Debug("CCS slice_load")
+
+		for _, vi := range v.SV() {
+			err := cc.Load(&vi)
+			if err != nil {
+				return err
+			}
+		}
+
+	} else {
+
+		name := v.GE("name").Str()
+		pv := v.GE("params")
+		rchDur := v.GE("recheck")
+		rcoDur := v.GE("reconnection")
+		rchd := 0 * time.Minute
+		rcod := 0 * time.Minute
+
+		if name == "" {
+			log.Debug("CC one_load. To cc no name")
+			return errors.New("Not set connection name")
+		}
+		if pv.IsNull() {
+			log.Debug("CC one_load. To cc:" + name)
+			return errors.New("Not set connection params")
+		}
+		if rchDur.IsDecimal() {
+			log.Debug("CC one_load. To cc:" + name + " ch: " + rchDur.String())
+			rchd = time.Millisecond * time.Duration(rchDur.Dec().IntPart())
+		}
+		if rcoDur.IsDecimal() {
+			log.Debug("CC one_load. To cc:" + name + " co: " + rcoDur.String())
+			rcod = time.Millisecond * time.Duration(rcoDur.Dec().IntPart())
+		}
+
+		log.Debug("CC one_load. To cc: " + name)
+
+		p, e := cc.Pools[name]
+		if !e {
+			pc := Pool{Name: name, RecheckDuration: rchd, ReconnectDuration: rcod}
+			p = &pc
+			cc.Pools[name] = p
+			er := p.LoadParams(&pv)
+
+			if er == nil {
+				p.RecheckConnections(true)
+				p.InitRecheck()
+			}
+
+			return er
+		}
+
+		return p.LoadParams(&pv)
+	}
+
+	return nil
+}
+
 // Pool pool of connections
 type Pool struct {
-	name           string
-	mutex          sync.RWMutex
-	actualSettings string
-	items          []PoolItem
+	Name              string
+	Mutex             sync.RWMutex
+	ActualSettings    string
+	Items             []PoolItem
+	ReconnectDuration time.Duration
+	DoRecheck         bool
+	RecheckDuration   time.Duration
 }
 
 // PoolItem - one connection to Database
@@ -24,7 +100,8 @@ type PoolItem struct {
 	Hash               string
 	Name               string
 	DriverName         string
-	DataSourceName     string
+	DataSource         string
+	ContextPrepare     string
 	DB                 *sql.DB
 	Data               mfe.Variant
 	SetMaxOpenConns    int
@@ -32,24 +109,82 @@ type PoolItem struct {
 	SetConnMaxLifetime time.Duration
 	Priority           int
 	Init               bool
+	LastTryReConnect   time.Time
+}
+
+// Close all connections of pull
+func (p *Pool) Close() {
+	p.Mutex.Lock()
+	defer p.Mutex.Unlock()
+
+	p.DoRecheck = false
+
+	for _, pil := range p.Items {
+		pil.Close()
+	}
+}
+
+// InitRecheck start recheck
+func (p *Pool) InitRecheck() {
+	p.Mutex.Lock()
+	defer p.Mutex.Unlock()
+
+	if p.DoRecheck || p.RecheckDuration == 0 {
+		return
+	}
+
+	p.DoRecheck = true
+	go func() {
+		for p.DoRecheck && p.RecheckDuration > 0 {
+			p.Mutex.Lock()
+			defer p.Mutex.Unlock()
+			p.RecheckConnections(false)
+			p.Mutex.Unlock()
+			time.Sleep(p.RecheckDuration)
+		}
+	}()
+}
+
+// RecheckConnections check connections and close or reopen them
+func (p *Pool) RecheckConnections(force bool) {
+
+	if !p.DoRecheck && !force {
+		return
+	}
+
+	for _, pil := range p.Items {
+		if pil.Init {
+			db, _ := pil.GDB()
+			err := db.Ping()
+			if err != nil {
+				pil.Close()
+			}
+		}
+
+		if !pil.Init {
+			if time.Since(pil.LastTryReConnect) >= p.ReconnectDuration {
+				pil.Reconnect()
+			}
+		}
+	}
 }
 
 // ConnectionGet get connection from pool
-func (p *Pool) ConnectionGet() (pi PoolItem, err error) {
-	if p.items == nil {
+func (p *Pool) ConnectionGet() (pi *PoolItem, err error) {
+	if p.Items == nil {
 		return pi, errors.New("Connection Not Found")
 	}
 
 	b := false
 
-	for _, pil := range p.items {
+	for _, pil := range p.Items {
 		if !b && pil.Init {
-			pi = pil
+			pi = &pil
 			b = true
 		}
 
 		if pi.Priority < pil.Priority {
-			pi = pil
+			pi = &pil
 		}
 	}
 
@@ -59,29 +194,76 @@ func (p *Pool) ConnectionGet() (pi PoolItem, err error) {
 	return pi, nil
 }
 
-//LoadParams - Load params to Pool
-func (p *Pool) LoadParams(params string) (err error) {
-	log.Debug("LoadParams start. pool: " + p.name)
+// ConnectionGetAlt get connection from pool with alt conditions
+func (p *Pool) ConnectionGetAlt(conditionUse func(pi *PoolItem) (b bool), conditionPriority func(pi *PoolItem) (i int64)) (pi *PoolItem, err error) {
+	if p.Items == nil {
+		return pi, errors.New("Connection Not Found")
+	}
 
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
+	b := false
 
-	log.Debug("LoadParams lock. pool: " + p.name)
+	for _, pil := range p.Items {
+		if !b && pil.Init && conditionUse(&pil) {
+			pi = &pil
+			b = true
+		}
+
+		if conditionPriority(pi) < conditionPriority(&pil) {
+			pi = &pil
+		}
+	}
+
+	if !b {
+		return pi, errors.New("Connection Not Found")
+	}
+	return pi, nil
+}
+
+// GDB Get Database
+func (pi *PoolItem) GDB() (DB *sql.DB, err error) {
+	if pi.Init {
+		return pi.DB, nil
+	}
+	return pi.DB, errors.New("Connection " + pi.Name + " Not Init")
+}
+
+// CheckConnection PingConnectionCheck
+func (pi *PoolItem) CheckConnection() {
+	db, _ := pi.GDB()
+	err := db.Ping()
+	if err != nil {
+		log.Debug("CheckConnection. fail: " + pi.Name)
+		pi.Close()
+	}
+}
+
+//LoadParamsForomString - Load params to Pool
+func (p *Pool) LoadParamsForomString(params string) (err error) {
+	log.Debug("LoadParams lock. pool: " + p.Name)
 
 	v, e := mfe.VariantNewFromJSON(params)
 
 	if e != nil {
-		log.Debug("LoadParams fail convert from Json. pool: " + p.name)
+		log.Debug("LoadParams fail convert from Json. pool: " + p.Name)
 		return e
 	}
+	return p.LoadParams(&v)
+}
+
+//LoadParams - Load params to Pool
+func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
+	log.Debug("LoadParams start. pool: " + p.Name)
+
+	p.Mutex.Lock()
+	defer p.Mutex.Unlock()
 
 	var items []PoolItem
 
 	if v.IsSV() {
-		log.Debug("LoadParams slice_load. pool: " + p.name)
+		log.Debug("LoadParams slice_load. pool: " + p.Name)
 
 		for _, vi := range v.SV() {
-			pic, err := PoolItemCreate(vi)
+			pic, err := PoolItemCreate(&vi)
 
 			if err != nil {
 				return err
@@ -91,7 +273,7 @@ func (p *Pool) LoadParams(params string) (err error) {
 		}
 
 	} else {
-		log.Debug("LoadParams one_load. pool: " + p.name)
+		log.Debug("LoadParams one_load. pool: " + p.Name)
 
 		pic, err := PoolItemCreate(v)
 
@@ -102,8 +284,8 @@ func (p *Pool) LoadParams(params string) (err error) {
 		items = append(items, pic)
 	}
 
-	if p.items == nil {
-		p.items = items
+	if p.Items == nil {
+		p.Items = items
 	} else {
 		var itemsR []PoolItem
 		var itemsS []PoolItem
@@ -111,7 +293,7 @@ func (p *Pool) LoadParams(params string) (err error) {
 
 		for _, pi := range items {
 			b := false
-			for _, pio := range p.items {
+			for _, pio := range p.Items {
 				if pio.Hash == pi.Hash {
 					b = true
 					itemsS = append(itemsS, pio)
@@ -124,7 +306,7 @@ func (p *Pool) LoadParams(params string) (err error) {
 
 		for _, pi := range items {
 			b := false
-			for _, pio := range p.items {
+			for _, pio := range p.Items {
 				if pio.Hash == pi.Hash {
 					b = true
 					itemsS = append(itemsS, pio)
@@ -139,7 +321,7 @@ func (p *Pool) LoadParams(params string) (err error) {
 			}
 		}
 
-		for _, pio := range p.items {
+		for _, pio := range p.Items {
 
 			b := false
 			for _, pi := range items {
@@ -152,7 +334,7 @@ func (p *Pool) LoadParams(params string) (err error) {
 			}
 		}
 
-		p.items = itemsS
+		p.Items = itemsS
 
 		for _, pii := range itemsR {
 			er := pii.Reconnect()
@@ -163,10 +345,7 @@ func (p *Pool) LoadParams(params string) (err error) {
 
 		go func() {
 			for _, pi := range itemsR {
-				er := pi.DB.Close()
-				if er != nil {
-					log.Debug("Fail to close Connection. : " + er.Error())
-				}
+				pi.Close()
 			}
 		}()
 	}
@@ -175,19 +354,22 @@ func (p *Pool) LoadParams(params string) (err error) {
 }
 
 //PoolItemCreate Create pool item
-func PoolItemCreate(v mfe.Variant) (pi PoolItem, err error) {
+func PoolItemCreate(v *mfe.Variant) (pi PoolItem, err error) {
 	pi = PoolItem{}
 
-	pi.Data = v
+	pi.Data = *v
 	pi.Hash = v.String()
+	pi.Name = v.GE("name").Str()
 
 	pi.DriverName = v.GE("driver_name").Str()
 
 	log.Debug("PoolItemCreate driver_name. : " + pi.DriverName)
 
-	pi.DataSourceName = v.GE("data_source_name").Str()
+	pi.DataSource = v.GE("data_source").Str()
 
-	log.Debug("PoolItemCreate data_source_name. : " + pi.DataSourceName)
+	pi.ContextPrepare = v.GE("context_prepare").Str()
+
+	log.Debug("PoolItemCreate data_source. : " + pi.DataSource)
 
 	ps := v.GE("pool_size")
 	mps := v.GE("min_pool_size")
@@ -211,7 +393,7 @@ func PoolItemCreate(v mfe.Variant) (pi PoolItem, err error) {
 		pi.SetMaxIdleConns = int(mps.Dec().IntPart())
 	}
 	if lt.IsDecimal() {
-		pi.SetConnMaxLifetime = time.Duration(time.Duration(lt.Dec().IntPart()) * time.Minute)
+		pi.SetConnMaxLifetime = time.Duration(time.Duration(lt.Dec().IntPart()) * time.Second)
 	}
 
 	if pr.IsDecimal() {
@@ -224,7 +406,9 @@ func PoolItemCreate(v mfe.Variant) (pi PoolItem, err error) {
 // Reconnect to pool item
 func (pi *PoolItem) Reconnect() (err error) {
 
-	db, err := sql.Open(pi.DriverName, pi.DataSourceName)
+	pi.LastTryReConnect = time.Now()
+
+	db, err := sql.Open(pi.DriverName, pi.DataSource)
 	if err != nil {
 		log.Debug("PoolItemCreate open connection. Error: " + err.Error())
 		return err
@@ -244,5 +428,24 @@ func (pi *PoolItem) Reconnect() (err error) {
 		pi.DB.SetConnMaxLifetime(pi.SetConnMaxLifetime)
 	}
 
+	return nil
+}
+
+// Close to pool item
+func (pi *PoolItem) Close() (err error) {
+	pi.Init = false
+
+	if !pi.Init {
+		log.Debug("Nothing to close Connection. : " + pi.Name)
+		return nil
+	}
+
+	er := pi.DB.Close()
+	if er != nil {
+		log.Debug("Fail to close Connection. : " + pi.Name + ": " + er.Error())
+		return er
+	}
+
+	log.Debug("Close Connection. : " + pi.Name)
 	return nil
 }
