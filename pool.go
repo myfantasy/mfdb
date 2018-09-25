@@ -68,7 +68,7 @@ func (cc *ConnectionsCollections) Load(v *mfe.Variant) (err error) {
 			pc := Pool{Name: name, RecheckDuration: rchd, ReconnectDuration: rcod}
 			p = &pc
 			cc.Pools[name] = p
-			er := p.LoadParams(&pv)
+			er := p.LoadParams(pv)
 
 			if er == nil {
 				p.RecheckConnections(true)
@@ -78,7 +78,7 @@ func (cc *ConnectionsCollections) Load(v *mfe.Variant) (err error) {
 			return er
 		}
 
-		return p.LoadParams(&pv)
+		return p.LoadParams(pv)
 	}
 
 	return nil

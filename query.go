@@ -145,7 +145,7 @@ func ExecuteWithPrepare(ctx context.Context, db *sql.DB, query string, prepareQu
 		}
 	}
 
-	r, e := c.QueryContext(ctx, prepareQuery)
+	r, e := c.QueryContext(ctx, query)
 
 	if e != nil {
 		return mfe.VariantNewNull(), e
@@ -190,6 +190,84 @@ func ExecuteWithPrepare(ctx context.Context, db *sql.DB, query string, prepareQu
 	return mfe.VariantNew(svAll), nil
 }
 
+// ExecuteWithPrepareBatch some query in db with prepare query
+func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prepareQuery string, batchSize int, batch func(v mfe.Variant) (err error)) (e error) {
+
+	c, ec := db.Conn(ctx)
+	if ec != nil {
+		return ec
+	}
+	defer c.Close()
+
+	if prepareQuery != "" {
+		_, ep := c.QueryContext(ctx, prepareQuery)
+		if ec != nil {
+			return ep
+		}
+	}
+
+	r, e := c.QueryContext(ctx, query)
+	defer r.Close()
+
+	if e != nil {
+		return e
+	}
+
+	for r.NextResultSet() {
+		svDataRes := make(mfe.SV, 0)
+
+		cols, _ := r.Columns()
+		ct, _ := r.ColumnTypes()
+
+		vals := make([]interface{}, len(cols))
+
+		for i := range vals {
+			vals[i] = new(interface{})
+		}
+
+		rib := 0
+		for r.Next() {
+			vm := mfe.VMap{}
+
+			er := r.Scan(vals...)
+			if er != nil {
+				return e
+			}
+			for i := range vals {
+				vv := mfe.VariantNew(*(vals[i].(*interface{})))
+				dtn := ct[i].DatabaseTypeName()
+				if dtn == "NUMERIC" && !vv.IsNull() {
+					vm[ct[i].Name()] = vv.ToDecimal()
+				} else {
+					vm[ct[i].Name()] = vv
+				}
+
+			}
+
+			svDataRes = append(svDataRes, mfe.VariantNew(vm))
+			rib++
+			if rib >= batchSize {
+				err := batch(mfe.VariantNew(svDataRes))
+				if err != nil {
+					return err
+				}
+				svDataRes = make(mfe.SV, 0)
+				rib = 0
+			}
+
+		}
+		if rib > 0 {
+			err := batch(mfe.VariantNew(svDataRes))
+			if err != nil {
+				return err
+			}
+		}
+
+	}
+
+	return nil
+}
+
 // Execute query in Pull
 func (p *Pool) Execute(ctx context.Context, query string) (v mfe.Variant, e error) {
 	pi, er := p.ConnectionGet()
@@ -213,4 +291,86 @@ func (cc *ConnectionsCollections) Execute(ctx context.Context, dbName string, qu
 	}
 
 	return p.Execute(ctx, query)
+}
+
+// SelectQueryWN create a select query from Variant
+func SelectQueryWN(v *mfe.Variant, fields ...string) (s string) {
+	res := ""
+	if v.IsVM() && !v.IsNull() {
+		res = "select "
+		for i, s := range fields {
+			if i > 0 {
+				res += ", "
+			}
+			res += SF(v.GE(s))
+		}
+	}
+	return res
+}
+
+// Array create a select query from Variant
+func Array(v *mfe.Variant, name ...string) (s string) {
+	res := "array["
+	if v.IsSV() && !v.IsNull() {
+		for i, ve := range v.SV() {
+			if i > 0 {
+				res += ", "
+			}
+			if len(name) == 0 {
+				res += SF(ve)
+			} else {
+				res += SF(ve.GE(name...))
+			}
+		}
+	}
+	return res + "]"
+}
+
+// SelectQueryWNMS create a select query from Variant for mssql
+func SelectQueryWNMS(v *mfe.Variant, fields ...string) (s string) {
+	res := ""
+	if v.IsVM() && !v.IsNull() {
+		res = "select "
+		for i, s := range fields {
+			if i > 0 {
+				res += ", "
+			}
+			res += SFMS(v.GE(s))
+		}
+	}
+	return res
+}
+
+// InsertQuery create a select query from Variant (multi line if slice)
+func InsertQuery(v *mfe.Variant, tableName string) (s string) {
+	if v.IsSV() {
+		res := ""
+		for _, vi := range v.SV() {
+			res += InsertQuery(&vi, tableName)
+		}
+		return res
+	}
+
+	fields := v.Keys()
+	s = "insert into " + tableName + "(" + mfe.JoinS(", ", fields...) + ")"
+	s += SelectQueryWN(v, fields...)
+	return s + ";"
+}
+
+// InsertQueryMS create a select query from Variant (multi line if slice)
+func InsertQueryMS(v *mfe.Variant, tableName string) (s string) {
+	if v.IsSV() {
+
+		res := ""
+		for _, vi := range v.SV() {
+			res += InsertQueryMS(&vi, tableName)
+		}
+		return res
+	}
+
+	fields := v.Keys()
+
+	s = "insert into " + tableName + "(" + mfe.JoinS(", ", fields...) + ")"
+	s += SelectQueryWNMS(v, fields...)
+	return s + ";"
 }
