@@ -79,16 +79,9 @@ func SFMS(i interface{}) (s string) {
 	return SF(i)
 }
 
-// Execute some query in db
-func Execute(db *sql.DB, query string) (v mfe.Variant, e error) {
+// Parse parse sql result (Rows) to Variant
+func Parse(r *sql.Rows) (v mfe.Variant, e error) {
 	svAll := make(mfe.SV, 0)
-
-	r, e := db.Query(query)
-
-	if e != nil {
-		return mfe.VariantNewNull(), e
-	}
-
 	for r.NextResultSet() {
 		svDataRes := make(mfe.SV, 0)
 
@@ -128,91 +121,8 @@ func Execute(db *sql.DB, query string) (v mfe.Variant, e error) {
 	return mfe.VariantNew(svAll), nil
 }
 
-// ExecuteWithPrepare some query in db with prepare query
-func ExecuteWithPrepare(ctx context.Context, db *sql.DB, query string, prepareQuery string) (v mfe.Variant, e error) {
-	svAll := make(mfe.SV, 0)
-
-	c, ec := db.Conn(ctx)
-	if ec != nil {
-		return mfe.VariantNewNull(), ec
-	}
-	defer c.Close()
-
-	if prepareQuery != "" {
-		_, ep := c.QueryContext(ctx, prepareQuery)
-		if ec != nil {
-			return mfe.VariantNewNull(), ep
-		}
-	}
-
-	r, e := c.QueryContext(ctx, query)
-
-	if e != nil {
-		return mfe.VariantNewNull(), e
-	}
-
-	for r.NextResultSet() {
-		svDataRes := make(mfe.SV, 0)
-
-		cols, _ := r.Columns()
-		ct, _ := r.ColumnTypes()
-
-		vals := make([]interface{}, len(cols))
-
-		for i := range vals {
-			vals[i] = new(interface{})
-		}
-
-		for r.Next() {
-			vm := mfe.VMap{}
-
-			er := r.Scan(vals...)
-			if er != nil {
-				return mfe.VariantNewNull(), e
-			}
-			for i := range vals {
-				vv := mfe.VariantNew(*(vals[i].(*interface{})))
-				dtn := ct[i].DatabaseTypeName()
-				if dtn == "NUMERIC" && !vv.IsNull() {
-					vm[ct[i].Name()] = vv.ToDecimal()
-				} else {
-					vm[ct[i].Name()] = vv
-				}
-
-			}
-
-			svDataRes = append(svDataRes, mfe.VariantNew(vm))
-		}
-
-		svAll = append(svAll, mfe.VariantNew(svDataRes))
-	}
-
-	return mfe.VariantNew(svAll), nil
-}
-
-// ExecuteWithPrepareBatch some query in db with prepare query
-func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prepareQuery string, batchSize int, batch func(v mfe.Variant) (err error)) (e error) {
-
-	c, ec := db.Conn(ctx)
-	if ec != nil {
-		return ec
-	}
-	defer c.Close()
-
-	if prepareQuery != "" {
-		_, ep := c.QueryContext(ctx, prepareQuery)
-		if ec != nil {
-			return ep
-		}
-	}
-
-	r, e := c.QueryContext(ctx, query)
-	defer r.Close()
-
-	if e != nil {
-		return e
-	}
-
+// ParseBatch parse sql result (Rows) to batches and process them
+func ParseBatch(r *sql.Rows, batchSize int, batchProcess func(v mfe.Variant) (err error)) (e error) {
 	for r.NextResultSet() {
 		svDataRes := make(mfe.SV, 0)
 
@@ -247,7 +157,7 @@ func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prep
 			svDataRes = append(svDataRes, mfe.VariantNew(vm))
 			rib++
 			if rib >= batchSize {
-				err := batch(mfe.VariantNew(svDataRes))
+				err := batchProcess(mfe.VariantNew(svDataRes))
 				if err != nil {
 					return err
 				}
@@ -257,7 +167,7 @@ func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prep
 
 		}
 		if rib > 0 {
-			err := batch(mfe.VariantNew(svDataRes))
+			err := batchProcess(mfe.VariantNew(svDataRes))
 			if err != nil {
 				return err
 			}
@@ -266,6 +176,76 @@ func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prep
 	}
 
 	return nil
+}
+
+// Execute some query in db
+func Execute(db *sql.DB, query string) (v mfe.Variant, e error) {
+	r, e := db.Query(query)
+
+	if e != nil {
+		return mfe.VariantNewNull(), e
+	}
+
+	return Parse(r)
+}
+
+// ExecuteInConnection execute query in connection
+func ExecuteInConnection(ctx context.Context, c *sql.Conn, query string) (v mfe.Variant, e error) {
+	r, e := c.QueryContext(ctx, query)
+
+	if e != nil {
+		return mfe.VariantNewNull(), e
+	}
+
+	return Parse(r)
+}
+
+// ExecuteBatchInConnection execute query in connection to batches and process them
+func ExecuteBatchInConnection(ctx context.Context, c *sql.Conn, query string, batchSize int, batchProcess func(v mfe.Variant) (err error)) (e error) {
+	r, e := c.QueryContext(ctx, query)
+
+	if e != nil {
+		return e
+	}
+
+	return ParseBatch(r, batchSize, batchProcess)
+}
+
+// ExecuteWithPrepare some query in db with prepare query
+func ExecuteWithPrepare(ctx context.Context, db *sql.DB, query string, prepareQuery string) (v mfe.Variant, e error) {
+	c, ec := db.Conn(ctx)
+	if ec != nil {
+		return mfe.VariantNewNull(), ec
+	}
+	defer c.Close()
+
+	if prepareQuery != "" {
+		_, ep := c.QueryContext(ctx, prepareQuery)
+		if ec != nil {
+			return mfe.VariantNewNull(), ep
+		}
+	}
+
+	return ExecuteInConnection(ctx, c, query)
+}
+
+// ExecuteWithPrepareBatch some query in db with prepare query
+func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prepareQuery string, batchSize int, batchProcess func(v mfe.Variant) (err error)) (e error) {
+
+	c, ec := db.Conn(ctx)
+	if ec != nil {
+		return ec
+	}
+	defer c.Close()
+
+	if prepareQuery != "" {
+		_, ep := c.QueryContext(ctx, prepareQuery)
+		if ec != nil {
+			return ep
+		}
+	}
+
+	return ExecuteBatchInConnection(ctx, c, query, batchSize, batchProcess)
 }
 
 // Execute query in Pull
@@ -283,6 +263,34 @@ func (p *Pool) Execute(ctx context.Context, query string) (v mfe.Variant, e erro
 	return ExecuteWithPrepare(ctx, db, query, pi.ContextPrepare)
 }
 
+// ExecuteProcess execute process in Pull
+func (p *Pool) ExecuteProcess(ctx context.Context, porcess func(ctx context.Context, c *sql.Conn) (e error)) (e error) {
+	pi, er := p.ConnectionGet()
+	if er != nil {
+		return er
+	}
+
+	db, err := pi.GDB()
+	if err != nil {
+		return err
+	}
+
+	c, ec := db.Conn(ctx)
+	if ec != nil {
+		return ec
+	}
+	defer c.Close()
+
+	if pi.ContextPrepare != "" {
+		_, ep := c.QueryContext(ctx, pi.ContextPrepare)
+		if ec != nil {
+			return ep
+		}
+	}
+
+	return porcess(ctx, c)
+}
+
 // Execute query in ConnectionsCollections
 func (cc *ConnectionsCollections) Execute(ctx context.Context, dbName string, query string) (v mfe.Variant, e error) {
 	p, t := cc.Pools[dbName]
@@ -291,6 +299,16 @@ func (cc *ConnectionsCollections) Execute(ctx context.Context, dbName string, qu
 	}
 
 	return p.Execute(ctx, query)
+}
+
+// ExecuteProcess execute process in ConnectionsCollections
+func (cc *ConnectionsCollections) ExecuteProcess(ctx context.Context, dbName string, porcess func(ctx context.Context, c *sql.Conn) (e error)) (e error) {
+	p, t := cc.Pools[dbName]
+	if !t {
+		return errors.New("dbName [" + dbName + "] not found")
+	}
+
+	return p.ExecuteProcess(ctx, porcess)
 }
 
 // SelectQueryWN create a select query from Variant
@@ -308,7 +326,7 @@ func SelectQueryWN(v *mfe.Variant, fields ...string) (s string) {
 	return res
 }
 
-// Array create a select query from Variant
+// Array create an array query from Variant
 func Array(v *mfe.Variant, name ...string) (s string) {
 	res := "array["
 	if v.IsSV() && !v.IsNull() {
@@ -326,6 +344,38 @@ func Array(v *mfe.Variant, name ...string) (s string) {
 	return res + "]"
 }
 
+// SelectUnion create an select .. union all select .. query from Variant
+func SelectUnion(v *mfe.Variant, fields ...string) (s string) {
+	res := ""
+	if v.IsSV() && !v.IsNull() {
+		for i, ve := range v.SV() {
+			if i > 0 {
+				res += "\nunion all "
+			}
+			res += SelectQueryWN(&ve, fields...)
+		}
+	}
+	return res
+}
+
+// SelectUnionValue create an select .. union all select .. query from Variant
+func SelectUnionValue(v *mfe.Variant, name ...string) (s string) {
+	res := ""
+	if v.IsSV() && !v.IsNull() {
+		for i, ve := range v.SV() {
+			if i > 0 {
+				res += "\nunion all "
+			}
+			if len(name) == 0 {
+				res += "select " + SF(ve)
+			} else {
+				res += "select " + SF(ve.GE(name...))
+			}
+		}
+	}
+	return res
+}
+
 // SelectQueryWNMS create a select query from Variant for mssql
 func SelectQueryWNMS(v *mfe.Variant, fields ...string) (s string) {
 	res := ""
@@ -336,6 +386,38 @@ func SelectQueryWNMS(v *mfe.Variant, fields ...string) (s string) {
 				res += ", "
 			}
 			res += SFMS(v.GE(s))
+		}
+	}
+	return res
+}
+
+// SelectUnionMS create an select .. union all select .. query from Variant for mssql
+func SelectUnionMS(v *mfe.Variant, fields ...string) (s string) {
+	res := ""
+	if v.IsSV() && !v.IsNull() {
+		for i, ve := range v.SV() {
+			if i > 0 {
+				res += "\nunion all "
+			}
+			res += SelectQueryWNMS(&ve, fields...)
+		}
+	}
+	return res
+}
+
+// SelectUnionValueMS create an select .. union all select .. query from Variant for mssql
+func SelectUnionValueMS(v *mfe.Variant, name ...string) (s string) {
+	res := ""
+	if v.IsSV() && !v.IsNull() {
+		for i, ve := range v.SV() {
+			if i > 0 {
+				res += "\nunion all "
+			}
+			if len(name) == 0 {
+				res += "select " + SFMS(ve)
+			} else {
+				res += "select " + SFMS(ve.GE(name...))
+			}
 		}
 	}
 	return res
