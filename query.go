@@ -35,7 +35,7 @@ func SF(i interface{}) (s string) {
 		}
 		return "false"
 	case time.Time:
-		return "'" + i.(time.Time).Format("20060102 150405.999999") + "'"
+		return "'" + i.(time.Time).Format("20060102 15:04:05.999999") + "'"
 	case string:
 		return "'" + strings.Replace(i.(string), "'", "''", -1) + "'"
 	case float32:
@@ -194,6 +194,7 @@ func ExecuteInConnection(ctx context.Context, c *sql.Conn, query string) (v mfe.
 	r, e := c.QueryContext(ctx, query)
 
 	if e != nil {
+		mfe.LogExtErrorF(e.Error(), "mfdb.ExecuteInConnection", "QueryContext")
 		return mfe.VariantNewNull(), e
 	}
 
@@ -205,6 +206,7 @@ func ExecuteBatchInConnection(ctx context.Context, c *sql.Conn, query string, ba
 	r, e := c.QueryContext(ctx, query)
 
 	if e != nil {
+		mfe.LogExtErrorF(e.Error(), "mfdb.ExecuteBatchInConnection", "QueryContext")
 		return e
 	}
 
