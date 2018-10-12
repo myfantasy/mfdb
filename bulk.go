@@ -13,6 +13,11 @@ type SBulkField struct {
 	SBF []BulkField
 }
 
+// Any has any rows
+func (sbf SBulkField) Any() (b bool) {
+	return len(sbf.SBF) > 0
+}
+
 // Columns Get Columns List
 func (sbf SBulkField) Columns() (columns []string) {
 	for _, bf := range sbf.SBF {
@@ -43,6 +48,16 @@ func BulkFieldCreate(v mfe.Variant) (bf BulkField) {
 func SBulkFieldCreate(v *mfe.Variant) (sbf SBulkField) {
 	for _, vi := range v.SV() {
 		sbf.SBF = append(sbf.SBF, BulkFieldCreate(vi))
+	}
+
+	return sbf
+}
+
+// SBulkFieldCreateString create from strings
+func SBulkFieldCreateString(vals ...string) (sbf SBulkField) {
+	for i := 0; i < len(vals); i = i + 2 {
+		bf := BulkField{Name: vals[i], Type: vals[i+1]}
+		sbf.SBF = append(sbf.SBF, bf)
 	}
 
 	return sbf
