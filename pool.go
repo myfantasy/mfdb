@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/myfantasy/mfe"
-
 	log "github.com/sirupsen/logrus"
 )
 
@@ -178,13 +177,15 @@ func (p *Pool) ConnectionGet() (pi *PoolItem, err error) {
 	b := false
 
 	for _, pil := range p.Items {
+
 		if !b && pil.Init {
 			pi = &pil
 			b = true
 		}
-
-		if pi.Priority < pil.Priority {
-			pi = &pil
+		if b && pil.Init {
+			if pi.Priority < pil.Priority {
+				pi = &pil
+			}
 		}
 	}
 
@@ -252,7 +253,7 @@ func (p *Pool) LoadParamsForomString(params string) (err error) {
 
 //LoadParams - Load params to Pool
 func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
-	log.Debug("LoadParams start. pool: " + p.Name)
+	mfe.LogActionF("", "mfdb.Pool.LoadParams", "start")
 
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
@@ -260,7 +261,7 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 	var items []PoolItem
 
 	if v.IsSV() {
-		log.Debug("LoadParams slice_load. pool: " + p.Name)
+		mfe.LogActionF("LoadParams slice_load. pool: "+p.Name, "mfdb.Pool.LoadParams", "IsSV")
 
 		for _, vi := range v.SV() {
 			pic, err := PoolItemCreate(&vi)
@@ -273,7 +274,7 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 		}
 
 	} else {
-		log.Debug("LoadParams one_load. pool: " + p.Name)
+		mfe.LogActionF("LoadParams one_load. pool: "+p.Name, "mfdb.Pool.LoadParams", "IsSV else")
 
 		pic, err := PoolItemCreate(v)
 
@@ -286,6 +287,13 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 
 	if p.Items == nil {
 		p.Items = items
+		for _, pii := range p.Items {
+			er := pii.Reconnect()
+			if er != nil {
+				mfe.LogExtErrorF(er.Error(), "mfdb.Pool.LoadParams", "pii.Reconnect")
+
+			}
+		}
 	} else {
 		var itemsR []PoolItem
 		var itemsS []PoolItem
@@ -336,16 +344,20 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 
 		p.Items = itemsS
 
-		for _, pii := range itemsR {
+		for _, pii := range itemsI {
 			er := pii.Reconnect()
 			if er != nil {
-				log.Debug("Fail to close Connection. : " + er.Error())
+				mfe.LogExtErrorF(er.Error(), "mfdb.Pool.LoadParams", "pii.Reconnect")
+
 			}
 		}
 
 		go func() {
 			for _, pi := range itemsR {
-				pi.Close()
+				er := pi.Close()
+				if er != nil {
+					mfe.LogExtErrorF(er.Error(), "mfdb.Pool.LoadParams", "pi.Close")
+				}
 			}
 		}()
 	}
@@ -355,6 +367,8 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 
 //PoolItemCreate Create pool item
 func PoolItemCreate(v *mfe.Variant) (pi PoolItem, err error) {
+	mfe.LogActionF("", "mfdb.PoolItemCreate", "start")
+
 	pi = PoolItem{}
 
 	pi.Data = *v
@@ -363,22 +377,22 @@ func PoolItemCreate(v *mfe.Variant) (pi PoolItem, err error) {
 
 	pi.DriverName = v.GE("driver_name").Str()
 
-	log.Debug("PoolItemCreate driver_name. : " + pi.DriverName)
+	mfe.LogActionF("driver_name. : "+pi.DriverName, "mfdb.PoolItemCreate", "start")
 
 	pi.DataSource = v.GE("data_source").Str()
 
 	pi.ContextPrepare = v.GE("context_prepare").Str()
 
-	log.Debug("PoolItemCreate data_source. : " + pi.DataSource)
+	mfe.LogActionF("data_source. : loaded", "mfdb.PoolItemCreate", "start")
 
 	ps := v.GE("pool_size")
 	mps := v.GE("min_pool_size")
 	lt := v.GE("pool_life_time_connection")
 	pr := v.GE("priority")
 
-	log.Debug("PoolItemCreate pool_size. : " + ps.String())
-	log.Debug("PoolItemCreate min_pool_size. : " + mps.String())
-	log.Debug("PoolItemCreate pool_life_time_connection. : " + lt.String())
+	mfe.LogActionF("pool_size. : "+ps.String(), "mfdb.PoolItemCreate", "start")
+	mfe.LogActionF("min_pool_size. : "+mps.String(), "mfdb.PoolItemCreate", "start")
+	mfe.LogActionF("pool_life_time_connection. : "+lt.String(), "mfdb.PoolItemCreate", "start")
 
 	pi.SetMaxOpenConns = -1
 	pi.SetMaxIdleConns = -1

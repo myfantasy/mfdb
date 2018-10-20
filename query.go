@@ -180,9 +180,15 @@ func ParseBatch(r *sql.Rows, batchSize int, batchProcess func(v mfe.Variant) (er
 
 // Execute some query in db
 func Execute(db *sql.DB, query string) (v mfe.Variant, e error) {
+	if db == nil {
+		mfe.LogInnerErrorF("Connection is nil", "mfdb.Execute", "init")
+		return mfe.VariantNewNull(), errors.New("Connection is nil")
+	}
+
 	r, e := db.Query(query)
 
 	if e != nil {
+		mfe.LogExtErrorF(e.Error(), "mfdb.Execute", "Query")
 		return mfe.VariantNewNull(), e
 	}
 
@@ -191,6 +197,11 @@ func Execute(db *sql.DB, query string) (v mfe.Variant, e error) {
 
 // ExecuteInConnection execute query in connection
 func ExecuteInConnection(ctx context.Context, c *sql.Conn, query string) (v mfe.Variant, e error) {
+	if c == nil {
+		mfe.LogInnerErrorF("Connection is nil", "mfdb.ExecuteInConnection", "init")
+		return mfe.VariantNewNull(), errors.New("Connection is nil")
+	}
+
 	r, e := c.QueryContext(ctx, query)
 
 	if e != nil {
@@ -203,6 +214,11 @@ func ExecuteInConnection(ctx context.Context, c *sql.Conn, query string) (v mfe.
 
 // ExecuteBatchInConnection execute query in connection to batches and process them
 func ExecuteBatchInConnection(ctx context.Context, c *sql.Conn, query string, batchSize int, batchProcess func(v mfe.Variant) (err error)) (e error) {
+	if c == nil {
+		mfe.LogInnerErrorF("Connection is nil", "mfdb.ExecuteBatchInConnection", "init")
+		return errors.New("Connection is nil")
+	}
+
 	r, e := c.QueryContext(ctx, query)
 
 	if e != nil {
@@ -215,6 +231,11 @@ func ExecuteBatchInConnection(ctx context.Context, c *sql.Conn, query string, ba
 
 // ExecuteWithPrepare some query in db with prepare query
 func ExecuteWithPrepare(ctx context.Context, db *sql.DB, query string, prepareQuery string) (v mfe.Variant, e error) {
+	if db == nil {
+		mfe.LogInnerErrorF("Connection is nil", "mfdb.ExecuteWithPrepare", "init")
+		return mfe.VariantNewNull(), errors.New("Connection is nil")
+	}
+
 	c, ec := db.Conn(ctx)
 	if ec != nil {
 		return mfe.VariantNewNull(), ec
@@ -233,6 +254,10 @@ func ExecuteWithPrepare(ctx context.Context, db *sql.DB, query string, prepareQu
 
 // ExecuteWithPrepareBatch some query in db with prepare query
 func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prepareQuery string, batchSize int, batchProcess func(v mfe.Variant) (err error)) (e error) {
+	if db == nil {
+		mfe.LogInnerErrorF("Connection is nil", "mfdb.ExecuteWithPrepareBatch", "init")
+		return errors.New("Connection is nil")
+	}
 
 	c, ec := db.Conn(ctx)
 	if ec != nil {
@@ -252,9 +277,19 @@ func ExecuteWithPrepareBatch(ctx context.Context, db *sql.DB, query string, prep
 
 // Execute query in Pull
 func (p *Pool) Execute(ctx context.Context, query string) (v mfe.Variant, e error) {
+	if p == nil {
+		mfe.LogInnerErrorF("pool is nil", "mfdb.Pool.Execute", "init")
+		return mfe.VariantNewNull(), errors.New("pool is nil")
+	}
+
 	pi, er := p.ConnectionGet()
 	if er != nil {
+		mfe.LogInnerErrorF(er.Error(), "mfdb.Pool.Execute", "ConnectionGet")
 		return mfe.VariantNewNull(), er
+	}
+	if pi == nil {
+		mfe.LogInnerErrorF("Pool Connection is nil", "mfdb.Pool.Execute", "ConnectionGet")
+		return mfe.VariantNewNull(), errors.New("Pool Connection is nil")
 	}
 
 	db, err := pi.GDB()
