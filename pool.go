@@ -25,7 +25,7 @@ func ConnectionsCollectionsCreate() (cc ConnectionsCollections) {
 func (cc *ConnectionsCollections) Load(v *mfe.Variant) (err error) {
 
 	if v.IsSV() {
-		log.Debug("CCS slice_load")
+		mfe.LogActionF("", "mfdb.ConnectionsCollections.Load", "IsSV")
 
 		for _, vi := range v.SV() {
 			err := cc.Load(&vi)
@@ -35,6 +35,7 @@ func (cc *ConnectionsCollections) Load(v *mfe.Variant) (err error) {
 		}
 
 	} else {
+		mfe.LogActionF("", "mfdb.ConnectionsCollections.Load", "IsSV else")
 
 		name := v.GE("name").Str()
 		pv := v.GE("params")
@@ -44,26 +45,28 @@ func (cc *ConnectionsCollections) Load(v *mfe.Variant) (err error) {
 		rcod := 0 * time.Minute
 
 		if name == "" {
-			log.Debug("CC one_load. To cc no name")
+			mfe.LogInnerErrorF("no name", "mfdb.ConnectionsCollections.Load", "IsSV else")
 			return errors.New("Not set connection name")
 		}
 		if pv.IsNull() {
-			log.Debug("CC one_load. To cc:" + name)
+			mfe.LogInnerErrorF("no connection params cc:"+name, "mfdb.ConnectionsCollections.Load", "IsSV else")
 			return errors.New("Not set connection params")
 		}
 		if rchDur.IsDecimal() {
-			log.Debug("CC one_load. To cc:" + name + " ch: " + rchDur.String())
+			mfe.LogActionF("ch: "+rchDur.String()+" cc:"+name, "mfdb.ConnectionsCollections.Load", "IsSV else")
 			rchd = time.Millisecond * time.Duration(rchDur.Dec().IntPart())
 		}
 		if rcoDur.IsDecimal() {
-			log.Debug("CC one_load. To cc:" + name + " co: " + rcoDur.String())
+			mfe.LogActionF("co: "+rcoDur.String()+" cc:"+name, "mfdb.ConnectionsCollections.Load", "IsSV else")
 			rcod = time.Millisecond * time.Duration(rcoDur.Dec().IntPart())
 		}
 
-		log.Debug("CC one_load. To cc: " + name)
+		mfe.LogActionF("params loaded cc:"+name, "mfdb.ConnectionsCollections.Load", "IsSV else")
 
 		p, e := cc.Pools[name]
 		if !e {
+			mfe.LogActionF("cc:"+name, "mfdb.ConnectionsCollections.Load", "IsSV else new conection")
+
 			pc := Pool{Name: name, RecheckDuration: rchd, ReconnectDuration: rcod}
 			p = &pc
 			cc.Pools[name] = p
@@ -77,6 +80,7 @@ func (cc *ConnectionsCollections) Load(v *mfe.Variant) (err error) {
 			return er
 		}
 
+		mfe.LogActionF("cc:"+name, "mfdb.ConnectionsCollections.Load", "IsSV else exists conection")
 		return p.LoadParams(pv)
 	}
 
@@ -88,7 +92,7 @@ type Pool struct {
 	Name              string
 	Mutex             sync.RWMutex
 	ActualSettings    string
-	Items             []PoolItem
+	Items             []*PoolItem
 	ReconnectDuration time.Duration
 	DoRecheck         bool
 	RecheckDuration   time.Duration
@@ -179,18 +183,18 @@ func (p *Pool) ConnectionGet() (pi *PoolItem, err error) {
 	for _, pil := range p.Items {
 
 		if !b && pil.Init {
-			pi = &pil
+			pi = pil
 			b = true
 		}
 		if b && pil.Init {
 			if pi.Priority < pil.Priority {
-				pi = &pil
+				pi = pil
 			}
 		}
 	}
 
 	if !b {
-		return pi, errors.New("Connection Not Found")
+		return pi, errors.New("Active Connection Not Found")
 	}
 	return pi, nil
 }
@@ -204,13 +208,13 @@ func (p *Pool) ConnectionGetAlt(conditionUse func(pi *PoolItem) (b bool), condit
 	b := false
 
 	for _, pil := range p.Items {
-		if !b && pil.Init && conditionUse(&pil) {
-			pi = &pil
+		if !b && pil.Init && conditionUse(pil) {
+			pi = pil
 			b = true
 		}
 
-		if conditionPriority(pi) < conditionPriority(&pil) {
-			pi = &pil
+		if conditionPriority(pi) < conditionPriority(pil) {
+			pi = pil
 		}
 	}
 
@@ -258,7 +262,7 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
 
-	var items []PoolItem
+	var items []*PoolItem
 
 	if v.IsSV() {
 		mfe.LogActionF("LoadParams slice_load. pool: "+p.Name, "mfdb.Pool.LoadParams", "IsSV")
@@ -270,7 +274,7 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 				return err
 			}
 
-			items = append(items, pic)
+			items = append(items, &pic)
 		}
 
 	} else {
@@ -282,7 +286,7 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 			return err
 		}
 
-		items = append(items, pic)
+		items = append(items, &pic)
 	}
 
 	if p.Items == nil {
@@ -295,9 +299,9 @@ func (p *Pool) LoadParams(v *mfe.Variant) (err error) {
 			}
 		}
 	} else {
-		var itemsR []PoolItem
-		var itemsS []PoolItem
-		var itemsI []PoolItem
+		var itemsR []*PoolItem
+		var itemsS []*PoolItem
+		var itemsI []*PoolItem
 
 		for _, pi := range items {
 			b := false
@@ -419,12 +423,13 @@ func PoolItemCreate(v *mfe.Variant) (pi PoolItem, err error) {
 
 // Reconnect to pool item
 func (pi *PoolItem) Reconnect() (err error) {
+	mfe.LogActionF("", "mfdb.PoolItem.Reconnect", "start")
 
 	pi.LastTryReConnect = time.Now()
 
 	db, err := sql.Open(pi.DriverName, pi.DataSource)
 	if err != nil {
-		log.Debug("PoolItemCreate open connection. Error: " + err.Error())
+		mfe.LogInnerErrorF(err.Error(), "mfdb.PoolItem.Reconnect", "sql.Open")
 		return err
 	}
 
@@ -447,19 +452,20 @@ func (pi *PoolItem) Reconnect() (err error) {
 
 // Close to pool item
 func (pi *PoolItem) Close() (err error) {
+	mfe.LogActionF("name: "+pi.Name, "mfdb.PoolItem.Close", "start")
 	pi.Init = false
 
 	if !pi.Init {
-		log.Debug("Nothing to close Connection. : " + pi.Name)
+		mfe.LogActionF("name: "+pi.Name, "mfdb.PoolItem.Close", "nothing to close")
 		return nil
 	}
 
 	er := pi.DB.Close()
 	if er != nil {
-		log.Debug("Fail to close Connection. : " + pi.Name + ": " + er.Error())
+		mfe.LogExtErrorF("name: "+pi.Name+" "+err.Error(), "mfdb.PoolItem.Close", "DB.Close")
 		return er
 	}
 
-	log.Debug("Close Connection. : " + pi.Name)
+	mfe.LogActionF("name: "+pi.Name, "mfdb.PoolItem.Close", "end")
 	return nil
 }

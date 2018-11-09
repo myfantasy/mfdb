@@ -331,6 +331,7 @@ func (p *Pool) ExecuteProcess(ctx context.Context, porcess func(ctx context.Cont
 // Execute query in ConnectionsCollections
 func (cc *ConnectionsCollections) Execute(ctx context.Context, dbName string, query string) (v mfe.Variant, e error) {
 	p, t := cc.Pools[dbName]
+
 	if !t {
 		return mfe.VariantNewNull(), errors.New("dbName [" + dbName + "] not found")
 	}
@@ -341,6 +342,7 @@ func (cc *ConnectionsCollections) Execute(ctx context.Context, dbName string, qu
 // ExecuteProcess execute process in ConnectionsCollections
 func (cc *ConnectionsCollections) ExecuteProcess(ctx context.Context, dbName string, porcess func(ctx context.Context, c *sql.Conn) (e error)) (e error) {
 	p, t := cc.Pools[dbName]
+
 	if !t {
 		return errors.New("dbName [" + dbName + "] not found")
 	}
